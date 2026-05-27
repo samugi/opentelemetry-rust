@@ -3,6 +3,7 @@ use opentelemetry::{
     metrics::{Meter, MeterProvider},
     otel_debug, otel_error, otel_info, InstrumentationScope,
 };
+use std::borrow::Cow;
 use std::time::Duration;
 use std::{
     collections::HashMap,
@@ -183,7 +184,7 @@ impl Drop for SdkMeterProviderInner {
 }
 
 impl MeterProvider for SdkMeterProvider {
-    fn meter(&self, name: &'static str) -> Meter {
+    fn meter(&self, name: impl Into<Cow<'static, str>>) -> Meter {
         let scope = InstrumentationScope::builder(name).build();
         self.meter_with_scope(scope)
     }
@@ -631,6 +632,7 @@ mod tests {
         let provider = super::SdkMeterProvider::builder().build();
         let _meter1 = provider.meter("test");
         let _meter2 = provider.meter("test");
+        let _meter3 = provider.meter(String::from("test"));
         assert_eq!(provider.inner.meters.lock().unwrap().len(), 1);
 
         let scope = InstrumentationScope::builder("test")
@@ -638,9 +640,9 @@ mod tests {
             .with_schema_url("http://example.com")
             .build();
 
-        let _meter3 = provider.meter_with_scope(scope.clone());
         let _meter4 = provider.meter_with_scope(scope.clone());
-        let _meter5 = provider.meter_with_scope(scope);
+        let _meter5 = provider.meter_with_scope(scope.clone());
+        let _meter6 = provider.meter_with_scope(scope);
         assert_eq!(provider.inner.meters.lock().unwrap().len(), 2);
 
         // these are different meters because meter names are case sensitive
@@ -651,9 +653,9 @@ mod tests {
                 .build()
         };
 
-        let _meter6 = provider.meter_with_scope(make_scope("ABC"));
-        let _meter7 = provider.meter_with_scope(make_scope("Abc"));
-        let _meter8 = provider.meter_with_scope(make_scope("abc"));
+        let _meter7 = provider.meter_with_scope(make_scope("ABC"));
+        let _meter8 = provider.meter_with_scope(make_scope("Abc"));
+        let _meter9 = provider.meter_with_scope(make_scope("abc"));
 
         assert_eq!(provider.inner.meters.lock().unwrap().len(), 5);
     }

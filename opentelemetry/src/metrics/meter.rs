@@ -31,7 +31,7 @@ pub trait MeterProvider {
     /// // meter used in applications
     /// let meter = provider.meter("my_app");
     /// ```
-    fn meter(&self, name: &'static str) -> Meter {
+    fn meter(&self, name: impl Into<Cow<'static, str>>) -> Meter {
         let scope = InstrumentationScope::builder(name).build();
         self.meter_with_scope(scope)
     }

@@ -1,16 +1,66 @@
 use crate::metrics::{self, Meter, MeterProvider};
 use crate::{otel_error, otel_info, InstrumentationScope};
+use std::borrow::Cow;
+use std::fmt;
 use std::sync::{Arc, OnceLock, RwLock};
 
-type GlobalMeterProvider = Arc<dyn MeterProvider + Send + Sync>;
+/// Allows a specific [`MeterProvider`] to be used generically by the
+/// [`GlobalMeterProvider`] by mirroring the interface and returning concrete [`Meter`] types.
+pub trait ObjectSafeMeterProvider {
+    /// Creates a named meter instance through the underlying `MeterProvider`.
+    fn scoped_meter(&self, scope: InstrumentationScope) -> Meter;
+}
+
+impl<P> ObjectSafeMeterProvider for P
+where
+    P: MeterProvider + Send + Sync + 'static,
+{
+    fn scoped_meter(&self, scope: InstrumentationScope) -> Meter {
+        self.meter_with_scope(scope)
+    }
+}
+
+/// Represents the globally configured [`MeterProvider`] instance for this
+/// application.
+#[derive(Clone)]
+pub struct GlobalMeterProvider {
+    provider: Arc<dyn ObjectSafeMeterProvider + Send + Sync>,
+}
+
+impl fmt::Debug for GlobalMeterProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("GlobalMeterProvider")
+    }
+}
+
+impl GlobalMeterProvider {
+    /// Create a new `GlobalMeterProvider` instance from a struct that implements `MeterProvider`.
+    fn new<P>(provider: P) -> Self
+    where
+        P: MeterProvider + Send + Sync + 'static,
+    {
+        Self {
+            provider: Arc::new(provider),
+        }
+    }
+}
+
+impl MeterProvider for GlobalMeterProvider {
+    fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
+        self.provider.scoped_meter(scope)
+    }
+}
 
 /// The global `MeterProvider` singleton.
 static GLOBAL_METER_PROVIDER: OnceLock<RwLock<GlobalMeterProvider>> = OnceLock::new();
 
 #[inline]
 fn global_meter_provider() -> &'static RwLock<GlobalMeterProvider> {
-    GLOBAL_METER_PROVIDER
-        .get_or_init(|| RwLock::new(Arc::new(crate::metrics::noop::NoopMeterProvider::new())))
+    GLOBAL_METER_PROVIDER.get_or_init(|| {
+        RwLock::new(GlobalMeterProvider::new(
+            crate::metrics::noop::NoopMeterProvider::new(),
+        ))
+    })
 }
 
 /// Sets the given [`MeterProvider`] instance as the current global meter
@@ -25,7 +75,7 @@ where
     // Try to set the global meter provider. If the RwLock is poisoned, we'll log an error.
     let mut global_provider = global_meter_provider().write();
     if let Ok(ref mut provider) = global_provider {
-        **provider = Arc::new(new_provider);
+        **provider = GlobalMeterProvider::new(new_provider);
         otel_info!(name: "MeterProvider.GlobalSet", message = "Global meter provider is set. Meters can now be created using global::meter() or global::meter_with_scope().");
     } else {
         otel_error!(name: "MeterProvider.GlobalSetFailed", message = "Setting global meter provider failed. Meters created using global::meter() or global::meter_with_scope() will not function. Report this issue in OpenTelemetry repo.");
@@ -40,7 +90,7 @@ pub fn meter_provider() -> GlobalMeterProvider {
         provider.clone()
     } else {
         otel_error!(name: "MeterProvider.GlobalGetFailed", message = "Getting global meter provider failed. Meters created using global::meter() or global::meter_with_scope() will not function. Report this issue in OpenTelemetry repo.");
-        Arc::new(crate::metrics::noop::NoopMeterProvider::new())
+        GlobalMeterProvider::new(crate::metrics::noop::NoopMeterProvider::new())
     }
 }
 
@@ -50,8 +100,8 @@ pub fn meter_provider() -> GlobalMeterProvider {
 ///
 /// **NOTE:** Calls to [`meter()`] return a [`Meter`] backed by the global [`MeterProvider`] configured during the method invocation.
 /// If the global [`MeterProvider`] is changed after getting [`Meter`] instances from these calls, the [`Meter`] instances returned will not reflect the change.
-pub fn meter(name: &'static str) -> Meter {
-    meter_provider().meter(name)
+pub fn meter(name: impl Into<Cow<'static, str>>) -> Meter {
+    meter_provider().meter(name.into())
 }
 
 /// Creates a [`Meter`] with the given instrumentation scope.
